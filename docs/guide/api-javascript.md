@@ -1,452 +1,263 @@
-# JavaScript API
-
-Vite's JavaScript APIs are fully typed, and it's recommended to use TypeScript or enable JS type checking in VS Code to leverage the intellisense and validation.
-
-## `createServer`
-
-**Type Signature:**
-
-```ts
-async function createServer(inlineConfig?: InlineConfig): Promise<ViteDevServer>
-```
-
-**Example Usage:**
-
-```ts twoslash
-import { fileURLToPath } from 'node:url'
-import { createServer } from 'vite'
-
-const __dirname = fileURLToPath(new URL('.', import.meta.url))
-
-const server = await createServer({
-  // any valid user config options, plus `mode` and `configFile`
-  configFile: false,
-  root: __dirname,
-  server: {
-    port: 1337,
-  },
-})
-await server.listen()
-
-server.printUrls()
-server.bindCLIShortcuts({ print: true })
-```
-
-::: tip NOTE
-When using `createServer` and `build` in the same Node.js process, both functions rely on `process.env.NODE_ENV` to work properly, which also depends on the `mode` config option. To prevent conflicting behavior, set `process.env.NODE_ENV` or the `mode` of the two APIs to `development`. Otherwise, you can spawn a child process to run the APIs separately.
-:::
-
-::: tip NOTE
-When using [middleware mode](/config/server-options.html#server-middlewaremode) combined with [proxy config for WebSocket](/config/server-options.html#server-proxy), the parent http server should be provided in `middlewareMode` to bind the proxy correctly.
-
-<details>
-<summary>Example</summary>
-
-```ts twoslash
-import http from 'http'
-import { createServer } from 'vite'
-
-const parentServer = http.createServer() // or express, koa, etc.
-
-const vite = await createServer({
-  server: {
-    // Enable middleware mode
-    middlewareMode: {
-      // Provide the parent http server for proxy WebSocket
-      server: parentServer,
-    },
-    proxy: {
-      '/ws': {
-        target: 'ws://localhost:3000',
-        // Proxying WebSocket
-        ws: true,
-      },
-    },
-  },
-})
-
-// @noErrors: 2339
-parentServer.use(vite.middlewares)
-```
-
-</details>
-:::
-
-## `InlineConfig`
-
-The `InlineConfig` interface extends `UserConfig` with additional properties:
-
-- `configFile`: specify config file to use. If not set, Vite will try to automatically resolve one from project root. Set to `false` to disable auto resolving.
-
-## `ResolvedConfig`
-
-The `ResolvedConfig` interface has all the same properties of a `UserConfig`, except most properties are resolved and non-undefined. It also contains utilities like:
-
-- `config.assetsInclude`: A function to check if an `id` is considered an asset.
-- `config.logger`: Vite's internal logger object.
-
-## `ViteDevServer`
-
-```ts
-interface ViteDevServer {
-  /**
-   * The resolved Vite config object.
-   */
-  config: ResolvedConfig
-  /**
-   * A connect app instance
-   * - Can be used to attach custom middlewares to the dev server.
-   * - Can also be used as the handler function of a custom http server
-   *   or as a middleware in any connect-style Node.js frameworks.
-   *
-   * https://github.com/senchalabs/connect#use-middleware
-   */
-  middlewares: Connect.Server
-  /**
-   * Native Node http server instance.
-   * Will be null in middleware mode.
-   */
-  httpServer: http.Server | null
-  /**
-   * Chokidar watcher instance. If `config.server.watch` is set to `null`,
-   * it will not watch any files and calling `add` or `unwatch` will have no effect.
-   * https://github.com/paulmillr/chokidar/tree/3.6.0#api
-   */
-  watcher: FSWatcher
-  /**
-   * WebSocket server with `send(payload)` method.
-   */
-  ws: WebSocketServer
-  /**
-   * Rollup plugin container that can run plugin hooks on a given file.
-   */
-  pluginContainer: PluginContainer
-  /**
-   * Module graph that tracks the import relationships, url to file mapping
-   * and hmr state.
-   */
-  moduleGraph: ModuleGraph
-  /**
-   * The resolved urls Vite prints on the CLI (URL-encoded). Returns `null`
-   * in middleware mode or if the server is not listening on any port.
-   */
-  resolvedUrls: ResolvedServerUrls | null
-  /**
-   * Programmatically resolve, load and transform a URL and get the result
-   * without going through the http request pipeline.
-   */
-  transformRequest(
-    url: string,
-    options?: TransformOptions,
-  ): Promise<TransformResult | null>
-  /**
-   * Apply Vite built-in HTML transforms and any plugin HTML transforms.
-   */
-  transformIndexHtml(
-    url: string,
-    html: string,
-    originalUrl?: string,
-  ): Promise<string>
-  /**
-   * Load a given URL as an instantiated module for SSR.
-   */
-  ssrLoadModule(
-    url: string,
-    options?: { fixStacktrace?: boolean },
-  ): Promise<Record<string, any>>
-  /**
-   * Fix ssr error stacktrace.
-   */
-  ssrFixStacktrace(e: Error): void
-  /**
-   * Triggers HMR for a module in the module graph. You can use the `server.moduleGraph`
-   * API to retrieve the module to be reloaded. If `hmr` is false, this is a no-op.
-   */
-  reloadModule(module: ModuleNode): Promise<void>
-  /**
-   * Start the server.
-   */
-  listen(port?: number, isRestart?: boolean): Promise<ViteDevServer>
-  /**
-   * Restart the server.
-   *
-   * @param forceOptimize - force the optimizer to re-bundle, same as --force cli flag
-   */
-  restart(forceOptimize?: boolean): Promise<void>
-  /**
-   * Stop the server.
-   */
-  close(): Promise<void>
-  /**
-   * Bind CLI shortcuts
-   */
-  bindCLIShortcuts(options?: BindCLIShortcutsOptions<ViteDevServer>): void
-  /**
-   * Calling `await server.waitForRequestsIdle(id)` will wait until all static imports
-   * are processed. If called from a load or transform plugin hook, the id needs to be
-   * passed as a parameter to avoid deadlocks. Calling this function after the first
-   * static imports section of the module graph has been processed will resolve immediately.
-   * @experimental
-   */
-  waitForRequestsIdle: (ignoredId?: string) => Promise<void>
-}
-```
-
-:::info
-`waitForRequestsIdle` is meant to be used as a escape hatch to improve DX for features that can't be implemented following the on-demand nature of the Vite dev server. It can be used during startup by tools like Tailwind to delay generating the app CSS classes until the app code has been seen, avoiding flashes of style changes. When this function is used in a load or transform hook, and the default HTTP1 server is used, one of the six http channels will be blocked until the server processes all static imports. Vite's dependency optimizer currently uses this function to avoid full-page reloads on missing dependencies by delaying loading of pre-bundled dependencies until all imported dependencies have been collected from static imported sources. Vite may switch to a different strategy in a future major release, setting `optimizeDeps.crawlUntilStaticImports: false` by default to avoid the performance hit in large applications during cold start.
-:::
-
-## `build`
-
-**Type Signature:**
-
-```ts
-async function build(
-  inlineConfig?: InlineConfig,
-): Promise<RollupOutput | RollupOutput[]>
-```
-
-**Example Usage:**
-
-```ts twoslash [vite.config.js]
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { build } from 'vite'
-
-const __dirname = fileURLToPath(new URL('.', import.meta.url))
-
-await build({
-  root: path.resolve(__dirname, './project'),
-  base: '/foo/',
-  build: {
-    rollupOptions: {
-      // ...
-    },
-  },
-})
-```
-
-## `preview`
-
-**Type Signature:**
-
-```ts
-async function preview(inlineConfig?: InlineConfig): Promise<PreviewServer>
-```
-
-**Example Usage:**
-
-```ts twoslash
-import { preview } from 'vite'
-
-const previewServer = await preview({
-  // any valid user config options, plus `mode` and `configFile`
-  preview: {
-    port: 8080,
-    open: true,
-  },
-})
-
-previewServer.printUrls()
-previewServer.bindCLIShortcuts({ print: true })
-```
-
-## `PreviewServer`
-
-```ts
-interface PreviewServer {
-  /**
-   * The resolved vite config object
-   */
-  config: ResolvedConfig
-  /**
-   * A connect app instance.
-   * - Can be used to attach custom middlewares to the preview server.
-   * - Can also be used as the handler function of a custom http server
-   *   or as a middleware in any connect-style Node.js frameworks
-   *
-   * https://github.com/senchalabs/connect#use-middleware
-   */
-  middlewares: Connect.Server
-  /**
-   * native Node http server instance
-   */
-  httpServer: http.Server
-  /**
-   * The resolved urls Vite prints on the CLI (URL-encoded). Returns `null`
-   * if the server is not listening on any port.
-   */
-  resolvedUrls: ResolvedServerUrls | null
-  /**
-   * Print server urls
-   */
-  printUrls(): void
-  /**
-   * Bind CLI shortcuts
-   */
-  bindCLIShortcuts(options?: BindCLIShortcutsOptions<PreviewServer>): void
-}
-```
-
-## `resolveConfig`
-
-**Type Signature:**
-
-```ts
-async function resolveConfig(
-  inlineConfig: InlineConfig,
-  command: 'build' | 'serve',
-  defaultMode = 'development',
-  defaultNodeEnv = 'development',
-  isPreview = false,
-): Promise<ResolvedConfig>
-```
-
-The `command` value is `serve` in dev and preview, and `build` in build.
-
-## `mergeConfig`
-
-**Type Signature:**
-
-```ts
-function mergeConfig(
-  defaults: Record<string, any>,
-  overrides: Record<string, any>,
-  isRoot = true,
-): Record<string, any>
-```
-
-Deeply merge two Vite configs. `isRoot` represents the level within the Vite config which is being merged. For example, set `false` if you're merging two `build` options.
-
-::: tip NOTE
-`mergeConfig` accepts only config in object form. If you have a config in callback form, you should call it before passing into `mergeConfig`.
-
-You can use the `defineConfig` helper to merge a config in callback form with another config:
-
-```ts twoslash
-import {
-  defineConfig,
-  mergeConfig,
-  type UserConfigFnObject,
-  type UserConfig,
-} from 'vite'
-declare const configAsCallback: UserConfigFnObject
-declare const configAsObject: UserConfig
-
-// ---cut---
-export default defineConfig((configEnv) =>
-  mergeConfig(configAsCallback(configEnv), configAsObject),
-)
-```
-
-:::
-
-## `searchForWorkspaceRoot`
-
-**Type Signature:**
-
-```ts
-function searchForWorkspaceRoot(
-  current: string,
-  root = searchForPackageRoot(current),
-): string
-```
-
-**Related:** [server.fs.allow](/config/server-options.md#server-fs-allow)
-
-Search for the root of the potential workspace if it meets the following conditions, otherwise it would fallback to `root`:
-
-- contains `workspaces` field in `package.json`
-- contains one of the following file
-  - `lerna.json`
-  - `pnpm-workspace.yaml`
-
-## `loadEnv`
-
-**Type Signature:**
-
-```ts
-function loadEnv(
-  mode: string,
-  envDir: string,
-  prefixes: string | string[] = 'VITE_',
-): Record<string, string>
-```
-
-**Related:** [`.env` Files](./env-and-mode.md#env-files)
-
-Load `.env` files within the `envDir`. By default, only env variables prefixed with `VITE_` are loaded, unless `prefixes` is changed.
-
-## `normalizePath`
-
-**Type Signature:**
-
-```ts
-function normalizePath(id: string): string
-```
-
-**Related:** [Path Normalization](./api-plugin.md#path-normalization)
-
-Normalizes a path to interoperate between Vite plugins.
-
-## `transformWithEsbuild`
-
-**Type Signature:**
-
-```ts
-async function transformWithEsbuild(
-  code: string,
-  filename: string,
-  options?: EsbuildTransformOptions,
-  inMap?: object,
-): Promise<ESBuildTransformResult>
-```
-
-Transform JavaScript or TypeScript with esbuild. Useful for plugins that prefer matching Vite's internal esbuild transform.
-
-## `loadConfigFromFile`
-
-**Type Signature:**
-
-```ts
-async function loadConfigFromFile(
-  configEnv: ConfigEnv,
-  configFile?: string,
-  configRoot: string = process.cwd(),
-  logLevel?: LogLevel,
-  customLogger?: Logger,
-): Promise<{
-  path: string
-  config: UserConfig
-  dependencies: string[]
-} | null>
-```
-
-Load a Vite config file manually with esbuild.
-
-## `preprocessCSS`
-
-- **Experimental:** [Give Feedback](https://github.com/vitejs/vite/discussions/13815)
-
-**Type Signature:**
-
-```ts
-async function preprocessCSS(
-  code: string,
-  filename: string,
-  config: ResolvedConfig,
-): Promise<PreprocessCSSResult>
-
-interface PreprocessCSSResult {
-  code: string
-  map?: SourceMapInput
-  modules?: Record<string, string>
-  deps?: Set<string>
-}
-```
-
-Pre-processes `.css`, `.scss`, `.sass`, `.less`, `.styl` and `.stylus` files to plain CSS so it can be used in browsers or parsed by other tools. Similar to the [built-in CSS pre-processing support](/guide/features#css-pre-processors), the corresponding pre-processor must be installed if used.
-
-The pre-processor used is inferred from the `filename` extension. If the `filename` ends with `.module.{ext}`, it is inferred as a [CSS module](https://github.com/css-modules/css-modules) and the returned result will include a `modules` object mapping the original class names to the transformed ones.
-
-Note that pre-processing will not resolve URLs in `url()` or `image-set()`.
+/* Online Shop - Single-file React component Drop this into a React + Tailwind project (Vite or CRA) as App.jsx. Requirements:
+
+React 18+
+
+Tailwind CSS configured in the project
+
+Optional: lucide-react for icons (install if you want) or remove icon imports
+
+
+What this file includes:
+
+Responsive product grid
+
+Product quick view modal
+
+Cart sidebar with add/remove/update quantity
+
+Simple checkout mock (no payment)
+
+LocalStorage persistence for cart
+
+Example product data (replace with your own or connect to an API)
+
+
+How to use:
+
+1. Create a new Vite + React project or CRA and configure Tailwind.
+
+
+2. Replace App.jsx with this file (or import the component).
+
+
+3. Start the dev server: npm run dev or npm start.
+
+
+
+Customize:
+
+Replace PRODUCTS array with your product API or CMS
+
+Hook up real checkout by sending cart to backend
+
+Add authentication and order history as needed */
+
+
+import React, { useEffect, useState } from "react";
+
+// Simple icon replacements if you don't want external icon libs function IconCart({ className = "w-5 h-5" }) { return ( <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"> <path strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4" /> <circle cx="10" cy="20" r="1" /> <circle cx="18" cy="20" r="1" /> </svg> ); } function IconClose({ className = "w-5 h-5" }) { return ( <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"> <path strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /> </svg> ); }
+
+const PRODUCTS = [ { id: "p1", title: "Classic Leather Jacket", price: 129.99, img: "https://images.unsplash.com/photo-1520975698519-9b0baf2a2a12?w=800&q=60", desc: "Premium faux-leather jacket with soft lining and modern cut. Available in S-XL.", stock: 12, }, { id: "p2", title: "Minimalist Watch", price: 79.99, img: "https://images.unsplash.com/photo-1519744792095-2f2205e87b6f?w=800&q=60", desc: "Sleek, water-resistant watch with stainless steel case and leather strap.", stock: 25, }, { id: "p3", title: "Everyday Backpack", price: 59.0, img: "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=800&q=60", desc: "Durable polyester backpack with laptop sleeve and multiple pockets.", stock: 30, }, { id: "p4", title: "Wireless Headphones", price: 99.5, img: "https://images.unsplash.com/photo-1518444024560-1f8b5a8a18c6?w=800&q=60", desc: "Noise-cancelling over-ear headphones with 20h battery life.", stock: 18, }, { id: "p5", title: "Sneaker Runner", price: 69.99, img: "https://images.unsplash.com/photo-1520975698519-9b0baf2a2a12?w=800&q=60&crop=faces&fit=crop", desc: "Lightweight sneakers built for comfort and everyday wear.", stock: 40, }, ];
+
+export default function App() { const [products] = useState(PRODUCTS); const [cart, setCart] = useState(() => { try { const raw = localStorage.getItem("shop_cart_v1"); return raw ? JSON.parse(raw) : {}; } catch (e) { return {}; } }); const [isCartOpen, setCartOpen] = useState(false); const [query, setQuery] = useState(""); const [selected, setSelected] = useState(null); const [successMessage, setSuccessMessage] = useState("");
+
+useEffect(() => { localStorage.setItem("shop_cart_v1", JSON.stringify(cart)); }, [cart]);
+
+function addToCart(productId, qty = 1) { setCart((c) => { const prev = c[productId] ? c[productId].qty : 0; const updated = { ...c, [productId]: { id: productId, qty: prev + qty } }; return updated; }); setCartOpen(true); }
+
+function updateQty(productId, qty) { setCart((c) => { if (!c[productId]) return c; if (qty <= 0) { const copy = { ...c }; delete copy[productId]; return copy; } return { ...c, [productId]: { ...c[productId], qty } }; }); }
+
+function clearCart() { setCart({}); }
+
+function totalItems() { return Object.values(cart).reduce((s, i) => s + i.qty, 0); }
+
+function cartLines() { return Object.values(cart).map((line) => { const prod = products.find((p) => p.id === line.id); return { ...line, title: prod.title, price: prod.price, img: prod.img, }; }); }
+
+function subtotal() { return cartLines().reduce((s, l) => s + l.qty * l.price, 0); }
+
+function fakeCheckout() { // In a real app, you'd send the cart to a backend now. setSuccessMessage("Order placed — thank you! (This is a demo checkout.)"); clearCart(); setTimeout(() => setSuccessMessage(""), 4000); setCartOpen(false); }
+
+const filtered = products.filter((p) => p.title.toLowerCase().includes(query.toLowerCase()));
+
+return ( <div className="min-h-screen bg-gray-50 text-gray-900"> {/* Header */} <header className="bg-white shadow-sm"> <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between"> <div className="flex items-center gap-4"> <div className="text-2xl font-bold">Aurora Shop</div> <nav className="hidden md:flex gap-4 text-sm text-gray-600"> <a className="hover:underline" href="#home">Home</a> <a className="hover:underline" href="#products">Products</a> <a className="hover:underline" href="#contact">Contact</a> </nav> </div>
+
+<div className="flex items-center gap-3">
+        <div className="hidden sm:block">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search products..."
+            className="border rounded-lg px-3 py-2 w-64 focus:outline-none"
+          />
+        </div>
+
+        <button
+          onClick={() => setCartOpen(true)}
+          className="relative rounded-md px-3 py-2 border flex items-center gap-2 hover:shadow">
+          <IconCart />
+          <span className="text-sm">Cart</span>
+          {totalItems() > 0 && (
+            <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full px-2">{totalItems()}</span>
+          )}
+        </button>
+      </div>
+    </div>
+  </header>
+
+  {/* Hero */}
+  <section id="home" className="max-w-6xl mx-auto px-4 py-12">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+      <div>
+        <h1 className="text-4xl font-extrabold mb-4">Shop modern goods — quality, curated.</h1>
+        <p className="text-gray-600 mb-6">Fast shipping · Secure checkout · 30-day returns</p>
+        <div className="flex gap-3">
+          <a href="#products" className="px-5 py-3 bg-indigo-600 text-white rounded-md shadow hover:opacity-95">Browse Products</a>
+          <button onClick={() => { setQuery(""); window.scrollTo({ top: 800, behavior: 'smooth' }); }} className="px-5 py-3 border rounded-md">View All</button>
+        </div>
+      </div>
+
+      <div className="rounded-lg overflow-hidden shadow-md">
+        <img src="https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=1200&q=60" alt="shop hero" className="w-full h-64 object-cover" />
+      </div>
+    </div>
+  </section>
+
+  {/* Products */}
+  <section id="products" className="max-w-6xl mx-auto px-4 py-8">
+    <div className="flex items-center justify-between mb-6">
+      <h2 className="text-2xl font-semibold">Products</h2>
+      <div className="text-sm text-gray-600">Showing {filtered.length} of {products.length}</div>
+    </div>
+
+    {filtered.length === 0 ? (
+      <div className="text-center py-20 text-gray-500">No products found</div>
+    ) : (
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+        {filtered.map((p) => (
+          <div key={p.id} className="bg-white rounded-lg shadow-sm overflow-hidden">
+            <div className="h-48 bg-gray-100 overflow-hidden flex items-center justify-center">
+              <img src={p.img} alt={p.title} className="w-full h-full object-cover" />
+            </div>
+            <div className="p-4">
+              <h3 className="font-medium">{p.title}</h3>
+              <p className="text-sm text-gray-500 mt-1">{p.desc}</p>
+              <div className="mt-3 flex items-center justify-between">
+                <div className="text-lg font-semibold">${p.price.toFixed(2)}</div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setSelected(p); }}
+                    className="px-3 py-1 border rounded-md text-sm">Quick View</button>
+                  <button
+                    onClick={() => addToCart(p.id, 1)}
+                    className="px-3 py-1 bg-indigo-600 text-white rounded-md text-sm">Add</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+  </section>
+
+  {/* Contact / Footer */}
+  <footer id="contact" className="bg-white border-t mt-10">
+    <div className="max-w-6xl mx-auto px-4 py-10 grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div>
+        <h4 className="font-bold">Aurora Shop</h4>
+        <p className="text-sm text-gray-600 mt-2">Quality goods, curated with care. Contact us at hello@aurorashop.example</p>
+      </div>
+      <div>
+        <h5 className="font-semibold">Help</h5>
+        <ul className="text-sm text-gray-600 mt-2 space-y-1">
+          <li>Shipping & returns</li>
+          <li>FAQ</li>
+          <li>Support center</li>
+        </ul>
+      </div>
+      <div>
+        <h5 className="font-semibold">Newsletter</h5>
+        <p className="text-sm text-gray-600 mt-2 mb-3">Get updates and offers</p>
+        <div className="flex gap-2">
+          <input className="px-3 py-2 border rounded-md" placeholder="Email address" />
+          <button className="px-3 py-2 bg-indigo-600 text-white rounded-md">Subscribe</button>
+        </div>
+      </div>
+    </div>
+    <div className="text-center text-sm text-gray-500 py-4">© {new Date().getFullYear()} Aurora Shop. All rights reserved.</div>
+  </footer>
+
+  {/* Product Modal */}
+  {selected && (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-40">
+      <div className="bg-white rounded-lg max-w-3xl w-full mx-4 overflow-hidden shadow-lg">
+        <div className="flex justify-between items-start p-4">
+          <div>
+            <h3 className="text-xl font-semibold">{selected.title}</h3>
+            <div className="text-sm text-gray-500">${selected.price.toFixed(2)}</div>
+          </div>
+          <button onClick={() => setSelected(null)} className="p-2">
+            <IconClose />
+          </button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4">
+          <div className="h-80 overflow-hidden">
+            <img src={selected.img} alt={selected.title} className="w-full h-full object-cover" />
+          </div>
+          <div>
+            <p className="text-gray-700 mb-4">{selected.desc}</p>
+            <div className="mb-4">Stock: <strong>{selected.stock}</strong></div>
+            <div className="flex gap-3">
+              <button onClick={() => { addToCart(selected.id, 1); setSelected(null); }} className="px-4 py-2 bg-indigo-600 text-white rounded-md">Add to cart</button>
+              <button onClick={() => setSelected(null)} className="px-4 py-2 border rounded-md">Close</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )}
+
+  {/* Cart Sidebar */}
+  <div className={`fixed top-0 right-0 h-full w-full md:w-96 bg-white shadow-xl z-50 transform transition-transform ${isCartOpen ? "translate-x-0" : "translate-x-full"}`}>
+    <div className="p-4 border-b flex items-center justify-between">
+      <div className="flex items-center gap-3">
+        <IconCart />
+        <div className="font-semibold">Your Cart</div>
+      </div>
+      <div className="flex items-center gap-2">
+        <div className="text-sm text-gray-500">{totalItems()} items</div>
+        <button onClick={() => setCartOpen(false)} className="p-2"><IconClose /></button>
+      </div>
+    </div>
+
+    <div className="p-4 h-[calc(100%-160px)] overflow-auto">
+      {cartLines().length === 0 ? (
+        <div className="text-center text-gray-500 py-20">Your cart is empty</div>
+      ) : (
+        <div className="space-y-4">
+          {cartLines().map((line) => (
+            <div key={line.id} className="flex gap-3 items-center">
+              <img src={line.img} alt={line.title} className="w-16 h-16 object-cover rounded-md" />
+              <div className="flex-1">
+                <div className="font-medium">{line.title}</div>
+                <div className="text-sm text-gray-500">${line.price.toFixed(2)} each</div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button onClick={() => updateQty(line.id, line.qty - 1)} className="px-2 py-1 border rounded">-</button>
+                  <div className="px-3">{line.qty}</div>
+                  <button onClick={() => updateQty(line.id, line.qty + 1)} className="px-2 py-1 border rounded">+</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+
+    <div className="p-4 border-t">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-sm text-gray-600">Subtotal</div>
+        <div className="font-semibold">${subtotal().toFixed(2)}</div>
+      </div>
+      <div className="flex gap-2">
+        <button onClick={() => { fakeCheckout(); }} className="flex-1 px-4 py-2 bg-green-600 text-white rounded-md">Checkout</button>
+        <button onClick={() => clearCart()} className="px-4 py-2 border rounded-md">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  {/* Success toast */}
+  {successMessage && (
+    <div className="fixed left-1/2 -translate-x-1/2 bottom-8 bg-green-600 text-white px-5 py-3 rounded-md shadow z-60">{successMessage}</div>
+  )}
+</div>
+
+); }
